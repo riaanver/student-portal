@@ -2,6 +2,7 @@ const { PrismaClient } = require('@prisma/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
+const { sendTemporaryPasswordEmail } = require('../services/email.service');
 
 const adapter = new PrismaPg({
     connectionString: process.env.DATABASE_URL
@@ -41,7 +42,7 @@ exports.register = async (req, res, next) => {
             return res.status(400).json({ error: 'A student with this email already exists.'});
         }
 
-        // temporary password using bcrypt
+        // temporary password hashing
 
         const temporaryPassword = crypto.randomBytes(6).toString('base64url');
         
@@ -60,6 +61,13 @@ exports.register = async (req, res, next) => {
                 password: hashedPassword,
                 profilePhoto: profilePhoto || null
             }
+        });
+
+        // send temporary password to email
+        await sendTemporaryPasswordEmail({
+            recipientEmail: newStudent.email,
+            studentName: newStudent.name,
+            temporaryPassword
         });
 
         // send secure response
