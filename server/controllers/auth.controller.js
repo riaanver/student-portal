@@ -3,6 +3,7 @@ const { PrismaPg } = require('@prisma/adapter-pg');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const { sendTemporaryPasswordEmail } = require('../services/email.service');
+const jwt = require('jsonwebtoken');
 
 const adapter = new PrismaPg({
     connectionString: process.env.DATABASE_URL
@@ -138,10 +139,25 @@ exports.login = async (req, res, next) => {
             });
         }
 
+        const payload = {
+            studentId: student.id,
+            email: student.email,
+            passwordChanged: student.passwordChanged
+        };
+
+        const token = jwt.sign(
+            payload,
+            process.env.JWT_SECRET,
+            {
+                expiresIn: process.env.JWT_EXPIRES_IN
+            }
+        );
+
         if (!student.passwordChanged) {
             return res.status(200).json({
                 message: 'Login successful. Password change required.',
                 requiresPasswordChange: true,
+                token: token,
                 student: {
                     id: student.id,
                     name: student.name,
@@ -153,6 +169,7 @@ exports.login = async (req, res, next) => {
         return res.status(200).json({
             message: 'Login successful.',
             requiresPasswordChange: false,
+            token: token,
             student: {
                 id: student.id,
                 name: student.name,
@@ -166,15 +183,16 @@ exports.login = async (req, res, next) => {
 
 exports.changePassword = async (req, res, next) => {
     try {
+        const studentId = req.user.studentId;
+
         const {
-            email,
             currentPassword,
             newPassword,
             confirmPassword
         } = req.body;
 
         // validate required fields
-        if (!email || !currentPassword || !newPassword || !confirmPassword) {
+        if (!currentPassword || !newPassword || !confirmPassword) {
             return res.status(400).json({
                 error: 'All fields are required.'
             });
@@ -194,23 +212,19 @@ exports.changePassword = async (req, res, next) => {
             });
         }
 
-        // normalize email
-
-        const normalizedEmail = email.trim().toLowerCase();
-
         // student not in database
 
-        const studentExists = await prisma.student.findUnique({
-            where: { email: normalizedEmail }
+        const student = await prisma.student.findUnique({
+            where: { id: studentId }
         });
 
-        if (!studentExists) {
+        if (!student) {
             return res.status(401).json({ error: 'Unable to change password.'});
         }
 
         const isPasswordCorrect = await bcrypt.compare(
             currentPassword,
-            studentExists.password
+            student.password
         );
 
         if (!isPasswordCorrect) {
@@ -219,7 +233,7 @@ exports.changePassword = async (req, res, next) => {
             });
         }
 
-        if (studentExists.passwordChanged) {
+        if (student.passwordChanged) {
             return res.status(409).json({
                 error: 'The temporary password has already been replaced.'
             });
@@ -227,7 +241,7 @@ exports.changePassword = async (req, res, next) => {
 
         const sameAsTemp = await bcrypt.compare(
             newPassword,
-            studentExists.password
+            student.password
         );
 
         if (sameAsTemp) {
@@ -238,9 +252,9 @@ exports.changePassword = async (req, res, next) => {
 
         const hashedNewPass = await bcrypt.hash(newPassword, 10);
 
-        await prisma.student.update({
+        const updatedStudent = await prisma.student.update({
             where: {
-                id: studentExists.id
+                id: student.id
             },
             data: {
                 password: hashedNewPass,
@@ -248,11 +262,30 @@ exports.changePassword = async (req, res, next) => {
             }
         });
 
+        const newToken = jwt.sign({
+                studentId: updatedStudent.id,
+                email: updatedStudent.email,
+                passwordChanged: updatedStudent.passwordChanged
+            },
+            process.env.JWT_SECRET,
+            {
+                expiresIn: process.env.JWT_EXPIRES_IN
+            }
+        );
+
         return res.status(200).json({
-            message: 'Password changed successfully.'
+            message: 'Password changed successfully.',
+            token: newToken,
+            requiresPasswordChange: false
         });
         
     } catch (error) {
         next(error);
     }
+};
+
+exports.getProfile = (req, res) => {
+    return res.status(200).json({
+        user: req.user
+    });
 };
